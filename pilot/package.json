@@ -1,0 +1,17 @@
+{
+  "name": "pilot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "node-hid": "^3.3.0",
+    "ws": "^8.20.0"
+  }
+}
