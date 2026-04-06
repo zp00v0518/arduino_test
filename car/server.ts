@@ -61,19 +61,20 @@ port.on("open", () => {
 parser.on('data', (line: string) => {
     const message = line.trim();
     
-    if (message.startsWith("TELE:")) {
-        const parts = message.replace("TELE:", "").split(";");
+    // Тепер шукаємо префікс "T:"
+    if (message.startsWith("T:")) {
+        const parts = message.replace("T:", "").split(";");
         
-        // Перевіряємо, чи всі частини на місці (має бути 3 частини)
         if (parts.length >= 3) {
-            console.log("\n--- ТЕЛЕМЕТРІЯ ---");
-            console.log(`🌡️  CPU: ${parts[0]}°C`);
-            console.log(`⏱️  Uptime: ${parts[1]} сек`);
+            console.log("\n--- ТЕЛЕМЕТРІЯ (раз на 5 сек) ---");
+            console.log(`🌡️ CPU: ${parts[0]}°C`);
+            console.log(`⏱️ Uptime: ${parts[1]} сек`);
             console.log(`🚨 Status: ${parts[2] === "1" ? "FAILSAFE" : "OK"}`);
+            console.log("---------------------------------\n");
         }
     } else {
-        // Якщо ESP32 шле щось інше (наприклад, твій лог про втрату зв'язку)
-        console.log("ESP32 Log:", message);
+        // Якщо це не телеметрія, просто виводимо як лог
+        console.log("ESP32:", message);
     }
 });
 

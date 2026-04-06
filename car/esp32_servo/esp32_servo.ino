@@ -20,24 +20,20 @@ TaskHandle_t TelemetryTask;
 
 // --- ФУНКЦІЯ ДЛЯ CORE 0 (Телеметрія) ---
 void telemetryTaskCode(void * pvParameters) {
-  Serial.print("Telemetry Task started on core: ");
-  Serial.println(xPortGetCoreID());
-
-  for (;;) { // Нескінченний цикл завдання
+  for (;;) {
     float temp_c = temperatureRead();
     unsigned long uptime = millis() / 1000;
 
-    // Відправка даних
-    Serial.print("TELE:");
-    Serial.print(temp_c);
+    // Скорочуємо вивід, щоб не "забивати" порт
+    Serial.print("T:"); // Замість TELE:
+    Serial.print(temp_c, 1); // Тільки один знак після коми
     Serial.print(";");
     Serial.print(uptime);
     Serial.print(";");
     Serial.println(isFailsafeActive ? "1" : "0");
 
-    // Затримка саме для цього завдання (1 секунда)
-    // vTaskDelay не блокує процесор, а дає йому "подихати"
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    // Затримка 5 секунд (5000 мс)
+    vTaskDelay(5000 / portTICK_PERIOD_MS);
   }
 }
 
