@@ -4,13 +4,14 @@ const int stepPin = 12;
 const int dirPin = 13;
 
 // Змінні стану
-int currentSteering = 127;
-int lastDir = -1;
+int targetSteeringInput = 127;
 unsigned long lastPacketTime = 0;
 
-// Змінні для плавності
-float smoothSteering = 127.0;
-const float accelStep = 0.8; // Швидкість розгону (чим менше, тим плавніше)
+// Налаштування кроків (перевір перемикачі на драйвері OK2D86ECS)
+const long STEPS_PER_REV = 1600;      // Кроків на 360 градусів
+const float TOTAL_TURNS = 4.0;        // Всього обертів від упору до упору
+const long MAX_STEPS = (STEPS_PER_REV * TOTAL_TURNS) / 2; // Кроків від центру до краю (3200 для 4 обертів)
+long currentPosition = 0;             // Поточна позиція в кроках
 
 void setup()
 {
@@ -29,53 +30,46 @@ void loop()
   {
     uint8_t packet[3];
     Serial.readBytes(packet, 3);
-    currentSteering = packet[0];
+    targetSteeringInput = packet[0];
     lastPacketTime = millis(); // Оновлюємо час останнього пакету
   }
 
   // 2. Failsafe: якщо зв'язок зник на 0.5 сек - зупиняємося
   if (millis() - lastPacketTime > 500)
   {
-    currentSteering = 127;
+    targetSteeringInput = 127;
   }
 
-  // 3. Плавний розгін (наближаємо smoothSteering до цілі)
-  if (smoothSteering < currentSteering)
-  {
-    smoothSteering += accelStep;
-  }
-  else if (smoothSteering > currentSteering)
-  {
-    smoothSteering -= accelStep;
-  }
+  // 3. Розрахунок цільової позиції в кроках
+  // Мапимо вхід 0-254 на діапазон кроків [-MAX_STEPS, MAX_STEPS]
+  long targetPosition = map(targetSteeringInput, 0, 254, -MAX_STEPS, MAX_STEPS);
 
-  // 4. Логіка руху (мертва зона 15 одиниць від центру)
-  if (abs(smoothSteering - 127) > 15)
+  // 4. Рух до цілі
+  if (currentPosition != targetPosition)
   {
-    int newDir = (smoothSteering > 127) ? HIGH : LOW;
-
-    // Захист від різкого реверсу: якщо напрямок змінився - пауза
-    if (newDir != lastDir && lastDir != -1)
+    // Визначаємо напрямок
+    if (currentPosition < targetPosition)
     {
-      delay(60);            // Час на фізичну зупинку валу
-      smoothSteering = 127; // Починаємо розгін з нуля в інший бік
+      digitalWrite(dirPin, HIGH);
+      currentPosition++;
     }
-    lastDir = newDir;
+    else
+    {
+      digitalWrite(dirPin, LOW);
+      currentPosition--;
+    }
 
-    digitalWrite(dirPin, newDir);
-
-    // Генерація кроку
+    // Генерація імпульсу кроку
     digitalWrite(stepPin, LOW);
-    delayMicroseconds(50);
+    delayMicroseconds(10); // Дуже короткий імпульс для драйвера
     digitalWrite(stepPin, HIGH);
 
-    // Швидкість: чим більше відхилення, тим менша затримка (wait)
-    // 1000 - повільно, 120 - швидко
-    int wait = map(abs((int)smoothSteering - 127), 0, 127, 1000, 120);
+    // Розрахунок швидкості (wait)
+    // Для позиційного керування можна використовувати постійну швидкість
+    // або сповільнюватися при наближенні до цілі
+    long distance = abs(targetPosition - currentPosition);
+    int wait = (distance > 100) ? 80 : 250; // Швидше, якщо далеко, повільніше, якщо близько
+    
     delayMicroseconds(wait);
-  }
-  else
-  {
-    lastDir = -1; // Скидаємо напрямок, коли стік у центрі
   }
 }
