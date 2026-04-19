@@ -1,0 +1,6 @@
+# Примусово встановлюємо LF для всіх текстових файлів
+* text=auto eol=lf
+
+# Окремо для Arduino та TypeScript
+*.ino text eol=lf
+*.ts text eol=lf

@@ -8,6 +8,11 @@ const port = new SerialPort({
   baudRate: 115200,
 });
 
+// Обробка помилок порту, щоб сервер не вилітав
+port.on("error", (err) => {
+  console.error("Помилка Serial порту: ", err.message);
+});
+
 const wss = new WebSocketServer({ port: 3000 });
 const parser = port.pipe(new ReadlineParser({ delimiter: '\r\n' }));
 
@@ -23,12 +28,14 @@ let isCalibrated = false;
 
 // Функція обробки значень керма
 function processSteering(rawSteering: number): number {
-  if (!isCalibrated) {
+  // Калібруємося тільки якщо значення близьке до центру (127-129), 
+  // щоб не прийняти затиснутий стік за нуль.
+  if (!isCalibrated && rawSteering > 110 && rawSteering < 145) {
     initialZero = rawSteering;
     isCalibrated = true;
     console.log(`Систему відкалібровано! Новий нуль: ${initialZero}`);
   }
-
+  
   // Обчислюємо реальне значення відносно 127 (центр для ESP32)
   let offset = rawSteering - initialZero;
   let steering = 127 + offset;
@@ -45,12 +52,16 @@ function processSteering(rawSteering: number): number {
 // Функція відправки пакету на ESP32
 function sendToMachine(s: number, b: number, t: number) {
   const packet = Buffer.from([s, b, t]);
-  port.write(packet);
   
-  lastSentSteering = s;
-  lastSentBrake = b;
-  lastSentThrottle = t;
-  lastSentTime = Date.now();
+  if (port.isOpen) {
+    port.write(packet);
+    lastSentSteering = s;
+    lastSentBrake = b;
+    lastSentThrottle = t;
+    lastSentTime = Date.now();
+  } else {
+    console.warn("Спроба відправити дані, але Serial порт закритий!");
+  }
 }
 
 port.on("open", () => {
@@ -99,9 +110,6 @@ wss.on("connection", (ws) => {
 
       if (dataChanged || timePassed) {
         sendToMachine(finalSteering, command.brake, command.throttle);
-        
-        // Лог для перевірки (можна закоментувати, якщо заважає)
-        // console.log(`STR: ${finalSteering} | BRK: ${command.brake} | THR: ${command.throttle}`);
       }
     } catch (e) {
       console.error("Помилка даних:", e);
