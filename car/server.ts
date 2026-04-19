@@ -1,14 +1,13 @@
 import { WebSocketServer } from "ws";
 import { SerialPort } from "serialport";
-import { ReadlineParser } from "@serialport/parser-readline"; // Додай цей імпорт
+import { ReadlineParser } from "@serialport/parser-readline";
 
-// 1. Налаштування порту (Вкажи свій COM7)
+// 1. Налаштування порту
 const port = new SerialPort({
   path: "COM7", 
   baudRate: 115200,
 });
 
-// Обробка помилок порту, щоб сервер не вилітав
 port.on("error", (err) => {
   console.error("Помилка Serial порту: ", err.message);
 });
@@ -16,96 +15,103 @@ port.on("error", (err) => {
 const wss = new WebSocketServer({ port: 3000 });
 const parser = port.pipe(new ReadlineParser({ delimiter: '\r\n' }));
 
-// Змінні для збереження стану
+// Змінні стану
 let lastSentSteering = 127;
 let lastSentBrake = 0;
 let lastSentThrottle = 0;
 let lastSentTime = Date.now();
+let currentMachineStatus = "2"; // По замовчуванню: Потрібна перевірка
 
-// Змінні для калібрування
+// Змінні калібрування
 let initialZero = 127;
 let isCalibrated = false;
 
-// Функція обробки значень керма
 function processSteering(rawSteering: number): number {
-  // Калібруємося тільки якщо значення близьке до центру (127-129), 
-  // щоб не прийняти затиснутий стік за нуль.
   if (!isCalibrated && rawSteering > 110 && rawSteering < 145) {
     initialZero = rawSteering;
     isCalibrated = true;
-    console.log(`Систему відкалібровано! Новий нуль: ${initialZero}`);
+    console.log(`Систему відкалібровано! Нуль: ${initialZero}`);
   }
   
-  // Обчислюємо реальне значення відносно 127 (центр для ESP32)
   let offset = rawSteering - initialZero;
   let steering = 127 + offset;
 
-  // Мертва зона (щоб не дрижало в центрі)
   const deathZone = 5;
-  if (Math.abs(steering - 127) < deathZone) {
-    steering = 127;
-  }
+  if (Math.abs(steering - 127) < deathZone) steering = 127;
 
-  return Math.max(0, Math.min(254, steering)); // 254, щоб не плутати з маркером 255 (якщо захочемо додати)
+  return Math.max(0, Math.min(254, steering));
 }
 
-// Функція відправки пакету на ESP32
 function sendToMachine(s: number, b: number, t: number) {
-  const packet = Buffer.from([s, b, t]);
-  
   if (port.isOpen) {
-    port.write(packet);
+    port.write(Buffer.from([s, b, t]));
     lastSentSteering = s;
     lastSentBrake = b;
     lastSentThrottle = t;
     lastSentTime = Date.now();
-  } else {
-    console.warn("Спроба відправити дані, але Serial порт закритий!");
+  }
+}
+
+// Функція запиту на Self-Test
+function triggerSelfTest() {
+  console.log("📡 Відправка команди на Self-Test (250)...");
+  if (port.isOpen) {
+    port.write(Buffer.from([250, 0, 0]));
   }
 }
 
 port.on("open", () => {
   console.log("Зв'язок з ESP32 (COM7) встановлено!");
 });
-port.on('data', (data) => {
-  console.log('Raw data from ESP32:', data.toString());
-});
 
-// Тепер слухаємо ПАРСЕР, а не сам порт
+// ОБРОБКА ТЕЛЕМЕТРІЇ
 parser.on('data', (line: string) => {
     const message = line.trim();
     
-    // Тепер шукаємо префікс "T:"
     if (message.startsWith("T:")) {
         const parts = message.replace("T:", "").split(";");
         
         if (parts.length >= 3) {
-            console.log("\n--- ТЕЛЕМЕТРІЯ (раз на 5 сек) ---");
-            console.log(`🌡️ CPU: ${parts[0]}°C`);
-            console.log(`⏱️ Uptime: ${parts[1]} сек`);
-            console.log(`🚨 Status: ${parts[2] === "1" ? "FAILSAFE" : "OK"}`);
-            console.log("---------------------------------\n");
+            currentMachineStatus = parts[2]; // Оновлюємо глобальний статус
+
+            let statusText = "";
+            switch (currentMachineStatus) {
+                case "0": statusText = "✅ ГОТОВИЙ"; break;
+                case "1": statusText = "🚨 АВАРІЯ ДРАЙВЕРА (ALARM)"; break;
+                case "2": statusText = "⚠️ ПОТРІБНА ПЕРЕВІРКА"; break;
+                case "4": statusText = "⚙️ ЙДЕ ТЕСТ КЕРМА..."; break;
+                default: statusText = "❓ НЕВІДОМИЙ СТАН";
+            }
+
+            process.stdout.write(`\r🌡️ ${parts[0]}°C | ⏱️ ${parts[1]}s | Стан: ${statusText}   `);
         }
     } else {
-        // Якщо це не телеметрія, просто виводимо як лог
-        console.log("ESP32:", message);
+        console.log("\nESP32 Log:", message);
     }
 });
 
 wss.on("connection", (ws) => {
-  console.log("ПІЛОТ підключився!");
+  console.log("\n🛸 ПІЛОТ підключився! Запускаємо діагностику...");
+  
+  // ЯК ТІЛЬКИ ПІЛОТ ЗАЙШОВ - ДАЄМО КОМАНДУ НА ТЕСТ
+  setTimeout(() => {
+    triggerSelfTest();
+  }, 1000); 
 
   ws.on("message", (rawData) => {
     try {
       const command = JSON.parse(rawData.toString());
-      const finalSteering = processSteering(command.steering);
+      
+      // Якщо система ще не пройшла тест, ігноруємо керування
+      if (currentMachineStatus !== "0") {
+          return; 
+      }
 
+      const finalSteering = processSteering(command.steering);
       const now = Date.now();
       
-      // УМОВА ВІДПРАВКИ: 
-      // Або дані змінилися (поріг 2), або минуло 100 мс (Heartbeat)
       const dataChanged = 
-        Math.abs(finalSteering - lastSentSteering) > 2 ||
+        Math.abs(finalSteering - lastSentSteering) > 1 ||
         Math.abs(command.brake - lastSentBrake) > 2 ||
         Math.abs(command.throttle - lastSentThrottle) > 2;
 
@@ -120,10 +126,10 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
-    console.log("ПІЛОТ відключився.");
-    // При відключенні пілота можемо відправити команду "стоп"
+    console.log("\n🔴 ПІЛОТ відключився.");
     sendToMachine(127, 0, 0);
+    isCalibrated = false; // Скидаємо калібрування для наступного пілота
   });
 });
 
-console.log("Сервер запущено на порту 3000. Чекаю пілота...");
+console.log("Сервер керування кермом запущено на порту 3000.");

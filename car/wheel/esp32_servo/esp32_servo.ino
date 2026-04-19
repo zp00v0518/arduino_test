@@ -6,7 +6,7 @@ const int alarmPin = 14;
 const int ledPin = 2;
 
 long STEPS_PER_REV = 1600; 
-const float TOTAL_TURNS = 4.0;
+const float TOTAL_TURNS = 3.6
 long maxSteps = (STEPS_PER_REV * TOTAL_TURNS) / 2;
 
 int targetInput = 127;
@@ -15,38 +15,44 @@ int lastDir = -1;
 unsigned long lastTelemetry = 0;
 unsigned long lastPacketTime = 0;
 
-// Логіка станів
-bool pilotConnected = false; 
+// Статуси системи
 bool systemVerified = false; 
-bool checkDone = false; // "Замок" для одноразової перевірки
+bool isTestingNow = false;
 
-void runMechanicalCheck() {
-  Serial.println("SYSTEM: STARTING PRE-FLIGHT CHECK...");
+// --- ФУНКЦІЯ ПЕРЕВІРКИ (Винесена) ---
+void executeMechanicalTest() {
+  isTestingNow = true;
+  systemVerified = false; // Скидаємо перед перевіркою
   
-  if (digitalRead(alarmPin) == LOW) { 
-    systemVerified = false;
+  Serial.println("SYSTEM: EXECUTING REMOTE TEST COMMAND...");
+
+  // 1. Перевірка на старті
+  if (digitalRead(alarmPin) == LOW) {
+    isTestingNow = false;
     return;
   }
 
-  // Тестовий рух вліво
+  // 2. Рух вліво (200 кроків)
   digitalWrite(dirPin, LOW);
   for(int i = 0; i < 200; i++) {
     digitalWrite(stepPin, LOW); delayMicroseconds(10);
     digitalWrite(stepPin, HIGH); delayMicroseconds(1000);
-    if(digitalRead(alarmPin) == LOW) { systemVerified = false; return; }
+    if(digitalRead(alarmPin) == LOW) { isTestingNow = false; return; }
   }
-  delay(150);
   
-  // Тестовий рух вправо
+  delay(200);
+
+  // 3. Рух вправо (200 кроків)
   digitalWrite(dirPin, HIGH);
   for(int i = 0; i < 200; i++) {
     digitalWrite(stepPin, LOW); delayMicroseconds(10);
     digitalWrite(stepPin, HIGH); delayMicroseconds(1000);
+    if(digitalRead(alarmPin) == LOW) { isTestingNow = false; return; }
   }
-  
+
   systemVerified = true;
-  checkDone = true; // Блокуємо повторний тест
-  Serial.println("SYSTEM: CHECK PASSED.");
+  isTestingNow = false;
+  Serial.println("SYSTEM: TEST COMPLETED SUCCESSFULLY.");
 }
 
 void setup() {
@@ -56,38 +62,26 @@ void setup() {
   pinMode(alarmPin, INPUT); 
   pinMode(ledPin, OUTPUT);
   digitalWrite(stepPin, HIGH);
+  Serial.println("SYSTEM: READY. WAITING FOR SERVER COMMAND...");
 }
 
 void loop() {
-  // 1. ПРИЙОМ ДАНИХ
+  // 1. ПРИЙОМ ДАНИХ ТА КОМАНД
   if (Serial.available() >= 3) {
     uint8_t packet[3];
     Serial.readBytes(packet, 3);
-    targetInput = packet[0];
+    
     lastPacketTime = millis();
 
-    // Якщо це перший пакет і перевірка ще не робилася
-    if (!pilotConnected && !checkDone) {
-      pilotConnected = true;
-      runMechanicalCheck();
+    // ПЕРЕВІРКА НА КОМАНДУ ТЕСТУ (Код 250)
+    if (packet[0] == 250) {
+      executeMechanicalTest();
+    } else {
+      targetInput = packet[0];
     }
-    pilotConnected = true; // Підтверджуємо, що пілот на зв'язку
   }
 
-  // 2. FAILSAFE (ВТРАТА ЗВ'ЯЗКУ)
-  if (millis() - lastPacketTime > 1000) { // Якщо секунду немає даних
-    if (pilotConnected) {
-      Serial.println("SYSTEM: PILOT DISCONNECTED");
-      pilotConnected = false;
-      checkDone = false; // Скидаємо прапорець, щоб при новому вході знову перевірити
-    }
-    targetInput = 127;
-    digitalWrite(ledPin, LOW);
-  } else {
-    digitalWrite(ledPin, HIGH);
-  }
-
-  // 3. ТЕЛЕМЕТРІЯ
+  // 2. ТЕЛЕМЕТРІЯ
   if (millis() - lastTelemetry > 1000) {
     bool isAlarm = (digitalRead(alarmPin) == LOW);
     
@@ -95,16 +89,24 @@ void loop() {
     Serial.print(temperatureRead(), 1); Serial.print(";");
     Serial.print(millis() / 1000); Serial.print(";");
 
-    if (isAlarm) Serial.println("1");               // Аварія
-    else if (!pilotConnected) Serial.println("3");   // Чекаємо коннект
-    else if (!systemVerified) Serial.println("2");   // Помилка тесту
-    else Serial.println("0");                       // ОК
+    if (isAlarm) Serial.println("1");               // Аварія (Червоний)
+    else if (isTestingNow) Serial.println("4");      // Процес тесту (Жовтий/Миготить)
+    else if (!systemVerified) Serial.println("2");   // Потрібна перевірка (Помаранчевий)
+    else Serial.println("0");                       // ГОТОВИЙ (Зелений)
     
     lastTelemetry = millis();
   }
 
-  // 4. РУХ (Тільки якщо перевірка успішна)
-  if (systemVerified && pilotConnected && digitalRead(alarmPin) == HIGH) {
+  // 3. FAILSAFE (Втрата зв'язку)
+  if (millis() - lastPacketTime > 1000) {
+    targetInput = 127;
+    digitalWrite(ledPin, LOW);
+  } else {
+    digitalWrite(ledPin, HIGH);
+  }
+
+  // 4. РУХ (Блокується, якщо йде тест або є Alarm)
+  if (systemVerified && !isTestingNow && digitalRead(alarmPin) == HIGH) {
     long targetPos = map(targetInput, 0, 254, -maxSteps, maxSteps);
     
     if (currentPos != targetPos) {
@@ -114,9 +116,7 @@ void loop() {
         digitalWrite(dirPin, newDir);
         lastDir = newDir;
       }
-      
       if (newDir == HIGH) currentPos++; else currentPos--;
-      
       digitalWrite(stepPin, LOW); delayMicroseconds(15);
       digitalWrite(stepPin, HIGH);
       
