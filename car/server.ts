@@ -67,6 +67,9 @@ function sendToMachine(s: number, b: number, t: number) {
 port.on("open", () => {
   console.log("Зв'язок з ESP32 (COM7) встановлено!");
 });
+port.on('data', (data) => {
+  console.log('Raw data from ESP32:', data.toString());
+});
 
 // Тепер слухаємо ПАРСЕР, а не сам порт
 parser.on('data', (line: string) => {

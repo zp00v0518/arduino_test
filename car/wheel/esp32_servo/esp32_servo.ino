@@ -2,74 +2,111 @@
 
 const int stepPin = 12;
 const int dirPin = 13;
+const int alarmPin = 14; 
+const int ledPin = 2;
 
-// Змінні стану
+long STEPS_PER_REV = 1600; 
+const float TOTAL_TURNS = 4.0;
+long maxSteps = (STEPS_PER_REV * TOTAL_TURNS) / 2;
+
 int targetSteeringInput = 127;
+long currentPosition = 0;
+int lastDir = -1;
 unsigned long lastPacketTime = 0;
+unsigned long lastTelemetryTime = 0;
+bool systemVerified = false; 
 
-// Налаштування кроків (перевір перемикачі на драйвері OK2D86ECS)
-const long STEPS_PER_REV = 1600;      // Кроків на 360 градусів
-const float TOTAL_TURNS = 4.0;        // Всього обертів від упору до упору
-const long MAX_STEPS = (STEPS_PER_REV * TOTAL_TURNS) / 2; // Кроків від центру до краю (3200 для 4 обертів)
-long currentPosition = 0;             // Поточна позиція в кроках
+void runMechanicalCheck() {
+  Serial.println("SYSTEM: STARTING MECHANICAL CHECK...");
+  
+  // Якщо при старті вже горить Alarm - тест провалено відразу
+  if (digitalRead(alarmPin) == LOW) { // При P-10=0, LOW це помилка
+    systemVerified = false;
+    return;
+  }
 
-void setup()
-{
+  // Рух для перевірки
+  digitalWrite(dirPin, LOW);
+  for(int i = 0; i < 200; i++) {
+    digitalWrite(stepPin, LOW); delayMicroseconds(10);
+    digitalWrite(stepPin, HIGH); delayMicroseconds(1000);
+    // Якщо під час руху виб'є помилку - фіксуємо
+    if(digitalRead(alarmPin) == LOW) { systemVerified = false; return; }
+  }
+  
+  delay(200);
+  digitalWrite(dirPin, HIGH);
+  for(int i = 0; i < 200; i++) {
+    digitalWrite(stepPin, LOW); delayMicroseconds(10);
+    digitalWrite(stepPin, HIGH); delayMicroseconds(1000);
+  }
+
+  systemVerified = true; // Якщо доїхали сюди і Alarm не мигнув - все ОК
+  Serial.println("SYSTEM: MECHANICAL CHECK PASSED");
+}
+
+void setup() {
   Serial.begin(115200);
   pinMode(stepPin, OUTPUT);
   pinMode(dirPin, OUTPUT);
+  pinMode(alarmPin, INPUT); 
+  pinMode(ledPin, OUTPUT);
 
   digitalWrite(stepPin, HIGH);
-  digitalWrite(dirPin, HIGH);
+  delay(2000); // Даємо драйверу час "прокинутись"
+  runMechanicalCheck();
 }
 
-void loop()
-{
-  // 1. Читаємо дані з Serial
-  if (Serial.available() >= 3)
-  {
+void loop() {
+  if (Serial.available() >= 3) {
     uint8_t packet[3];
     Serial.readBytes(packet, 3);
     targetSteeringInput = packet[0];
-    lastPacketTime = millis(); // Оновлюємо час останнього пакету
+    lastPacketTime = millis();
   }
 
-  // 2. Failsafe: якщо зв'язок зник на 0.5 сек - зупиняємося
-  if (millis() - lastPacketTime > 500)
-  {
+  // Failsafe
+  if (millis() - lastPacketTime > 500) {
     targetSteeringInput = 127;
+    digitalWrite(ledPin, LOW);
+  } else {
+    digitalWrite(ledPin, HIGH);
   }
 
-  // 3. Розрахунок цільової позиції в кроках
-  // Мапимо вхід 0-254 на діапазон кроків [-MAX_STEPS, MAX_STEPS]
-  long targetPosition = map(targetSteeringInput, 0, 254, -MAX_STEPS, MAX_STEPS);
-
-  // 4. Рух до цілі
-  if (currentPosition != targetPosition)
-  {
-    // Визначаємо напрямок
-    if (currentPosition < targetPosition)
-    {
-      digitalWrite(dirPin, HIGH);
-      currentPosition++;
-    }
-    else
-    {
-      digitalWrite(dirPin, LOW);
-      currentPosition--;
-    }
-
-    // Генерація імпульсу кроку
-    digitalWrite(stepPin, LOW);
-    delayMicroseconds(10); // Дуже короткий імпульс для драйвера
-    digitalWrite(stepPin, HIGH);
-
-    // Розрахунок швидкості (wait)
-    // Для позиційного керування можна використовувати постійну швидкість
-    // або сповільнюватися при наближенні до цілі
-    long distance = abs(targetPosition - currentPosition);
-    int wait = (distance > 100) ? 80 : 250; // Швидше, якщо далеко, повільніше, якщо близько
+  // Телеметрія
+  if (millis() - lastTelemetryTime > 1000) {
+    bool isAlarm = (digitalRead(alarmPin) == LOW); 
     
-    delayMicroseconds(wait);
+    Serial.print("T:");
+    Serial.print(temperatureRead(), 1); Serial.print(";");
+    Serial.print(millis() / 1000); Serial.print(";");
+
+    if (isAlarm) Serial.println("1");               // Код 1: Реальна аварія
+    else if (!systemVerified) Serial.println("2");   // Код 2: Тест не пройшов
+    else Serial.println("0");                       // Код 0: ВСЕ ГУД
+    
+    lastTelemetryTime = millis();
+  }
+
+  // Рух (тільки якщо немає Alarm)
+  if (digitalRead(alarmPin) == HIGH) {
+    long targetPosition = map(targetSteeringInput, 0, 254, -maxSteps, maxSteps);
+    if (currentPosition != targetPosition) {
+      int newDir = (currentPosition < targetPosition) ? HIGH : LOW;
+      if (newDir != lastDir) {
+        delayMicroseconds(5000);
+        digitalWrite(dirPin, newDir);
+        lastDir = newDir;
+      }
+      if (newDir == HIGH) currentPosition++; else currentPosition--;
+
+      digitalWrite(stepPin, LOW);
+      delayMicroseconds(15);
+      digitalWrite(stepPin, HIGH);
+      
+      long dist = abs(targetPosition - currentPosition);
+      int wait = (dist > 100) ? 150 : 400;
+      delayMicroseconds(wait);
+    }
   }
 }
