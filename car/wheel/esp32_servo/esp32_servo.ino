@@ -6,7 +6,7 @@ const int alarmPin = 14;
 const int ledPin = 2;
 
 long STEPS_PER_REV = 1600; 
-const float TOTAL_TURNS = 3.6
+const float TOTAL_TURNS = 3.6;
 long maxSteps = (STEPS_PER_REV * TOTAL_TURNS) / 2;
 
 int targetInput = 127;
